@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WebRTC + G29 + Keyboard HUD + 3D Shuttle</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+:root{--tile:clamp(280px,30vw,540px);--center-scale:0.75;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{
+  background:linear-gradient(135deg,#0a0e27 0%,#1a1e35 100%);
+  color:white;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;
+  min-height:100vh;display:flex;flex-direction:column;align-items:center;
+}
+.header{padding:18px;text-align:center;}
+h1{color:#00ff88;text-shadow:0 0 15px rgba(0,255,136,0.4);font-size:clamp(20px,2.2vw,28px);}
+.subtitle{color:#9aa;font-size:clamp(12px,1.2vw,14px);}
+.hidden{display:none;}
+.control-panel{margin-top:20px;width:min(92vw,480px);text-align:center;background:rgba(255,255,255,0.05);padding:18px;border-radius:12px;border:1px solid rgba(255,255,255,0.12);}
+.control-panel h3{color:#00ff88;margin-bottom:8px;}
+.bar-bg{background:rgba(255,255,255,0.12);border-radius:6px;margin:6px 0;height:10px;}
+.bar{height:10px;background:#00ff88;border-radius:6px;transition:width 0.05s linear;}
+button{margin:6px;padding:9px 16px;border:none;border-radius:8px;cursor:pointer;background:rgba(255,255,255,0.1);color:#fff;}
+button:hover{background:#00ff88;color:#000;}
+#mainContainer{width:100%;display:grid;place-items:center;grid-template-columns:1fr auto 1fr;grid-template-rows:1fr auto 1fr;gap:min(1.4vw,16px);padding:min(2vw,20px);}
+.slot{display:flex;align-items:center;justify-content:center;}
+.tile{width:var(--tile);aspect-ratio:16/9;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;}
+.tile-header{padding:6px 10px;background:rgba(0,0,0,0.45);border-bottom:1px solid #00ff88;font-size:0.95em;}
+.tile-body{flex:1;display:flex;align-items:center;justify-content:center;background:#000;}
+video{width:100%;height:100%;object-fit:contain;background:#000;}
+#three-container{width:calc(var(--tile)*var(--center-scale));height:calc(var(--tile)*var(--center-scale)*0.6);background:rgba(10,14,39,0.6);border:1px dashed rgba(0,255,136,0.25);border-radius:12px;position:relative;}
+#hud{
+  position:fixed;right:15px;bottom:15px;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,136,0.3);border-radius:10px;padding:12px 16px;font-size:14px;min-width:200px;backdrop-filter:blur(6px);box-shadow:0 0 12px rgba(0,255,136,0.2);
+}
+#hud h4{margin:0 0 6px;color:#00ff88;font-weight:600;}
+#hud .keys{display:flex;justify-content:space-around;margin-top:4px;}
+.key{width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.08);color:#bbb;transition:0.1s;}
+.key.active{background:#00ff88;color:#000;transform:scale(1.1);}
+.tpanel{
+  position:absolute;top:8px;right:8px;z-index:10;background:rgba(0,0,0,0.55);border:1px solid rgba(0,255,136,0.35);border-radius:8px;padding:6px 8px;font-size:13px;color:#bff;display:flex;flex-wrap:wrap;gap:6px;align-items:center;opacity:0;pointer-events:none;transition:opacity 0.3s ease;
+}
+#three-container:hover .tpanel{opacity:1;pointer-events:auto;}
+.tpanel select,.tpanel input[type="range"]{background:rgba(255,255,255,0.08);color:#fff;border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:4px 6px;}
+.tpanel button{padding:6px 10px;margin:0;background:rgba(255,255,255,0.08);}
+.tpanel label{font-size:12px;color:#cfe;opacity:0.9;margin-left:6px;}
+#modelStatus{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#00ff88;font-size:12px;text-align:center;background:rgba(0,0,0,0.7);padding:10px 15px;border-radius:8px;display:none;}
+#statsChart{position:absolute;bottom:8px;left:8px;width:240px;height:100px;background:rgba(0,0,0,0.7);border:1px solid rgba(0,255,136,0.3);border-radius:8px;padding:8px;backdrop-filter:blur(4px);}
+#statsChart canvas{width:100%;height:100%;}
+#cameraInfo{position:absolute;top:8px;left:8px;background:rgba(0,0,0,0.6);border:1px solid rgba(0,255,136,0.3);border-radius:8px;padding:6px 10px;font-size:11px;color:#bff;backdrop-filter:blur(4px);}
+#cameraInfo .mode{color:#00ff88;font-weight:600;}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>🛰️ WebRTC + Logitech G29 + Keyboard HUD + 3D Shuttle</h1>
+  <p class="subtitle">四路相机等尺寸 | 中心 3D 模型联动方向与灯光</p>
+</div>
+
+<div id="calibrationPanel" class="control-panel">
+  <h3>🎮 Logitech G29 校准</h3>
+  <div id="g29Status">等待连接 G29 ...（按任意按键唤醒）</div>
+  <div id="calibMsg">左右打满方向、油门刹车踩到底，然后点开始</div>
+  <div><button onclick="startCalibration()">开始校准</button><button onclick="confirmCalibration()">确认并进入监控</button><button onclick="resetCalibration()">重置</button></div>
+  <div>
+    <div>Steering <span id="steerVal">0</span></div><div class="bar-bg"><div id="steerBar" class="bar" style="width:50%"></div></div>
+    <div>Throttle <span id="throttleVal">0</span></div><div class="bar-bg"><div id="throttleBar" class="bar"></div></div>
+    <div>Brake <span id="brakeVal">0</span></div><div class="bar-bg"><div id="brakeBar" class="bar"></div></div>
+  </div>
+  <p id="statusMsg">正在连接控制服务器...</p>
+</div>
+
+<div id="mainContainer" class="hidden">
+  <div class="slot" style="grid-row:1;grid-column:2;"><div class="tile"><div class="tile-header">Front</div><div class="tile-body"><video id="video-4" autoplay playsinline muted></video></div></div></div>
+  <div class="slot" style="grid-row:2;grid-column:1;"><div class="tile"><div class="tile-header">FrontLeft</div><div class="tile-body"><video id="video-1" autoplay playsinline muted></video></div></div></div>
+  <div class="slot" style="grid-row:2;grid-column:2;">
+    <div id="three-container">
+      <div id="modelStatus">加载模型中...</div>
+      <div id="cameraInfo">📷 <span class="mode">第一人称俯视</span></div>
+      <div id="statsChart"><canvas id="chartCanvas"></canvas></div>
+    </div>
+  </div>
+  <div class="slot" style="grid-row:2;grid-column:3;"><div class="tile"><div class="tile-header">FrontRight</div><div class="tile-body"><video id="video-3" autoplay playsinline muted></video></div></div></div>
+  <div class="slot" style="grid-row:3;grid-column:2;"><div class="tile"><div class="tile-header">Rear</div><div class="tile-body"><video id="video-2" autoplay playsinline muted></video></div></div></div>
+</div>
+
+<div id="hud" class="hidden">
+  <h4>⌨️ 键盘控制状态</h4>
+  <div style="font-size:12px;margin-bottom:4px;color:#aaa;">
+    速度: <span id="hudLinear">0.00</span><br>
+    转向: <span id="hudAngular">0.00</span>
+  </div>
+  <div class="keys">
+    <div id="keyW" class="key" title="加速（油门）">W</div>
+    <div id="keyA" class="key" title="左转">A</div>
+    <div id="keyS" class="key" title="减速（刹车）">S</div>
+    <div id="keyD" class="key" title="右转">D</div>
+    <div id="keySp" class="key" title="紧急停止">⎵</div>
+    <div id="keyR" class="key" title="重置朝向">R</div>
+  </div>
+  <div style="font-size:10px;margin-top:6px;color:#888;line-height:1.3;">
+    💡 长按 WASD 渐进加速/转向<br>
+    🚗 车辆原地旋转，不移动位置<br>
+    📊 左下角显示实时速度曲线
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+
+window.THREE = THREE;
+let scene, camera3d, renderer, busGroup, headlightL, headlightR;
+let camMode = 'chase';
+let orbitAngle = 0, orbitRadius = 8;
+let vehicleState = {heading: 0, linearVel: 0, angularVel: 0};
+const velocityHistory = {linear: [], angular: [], maxPoints: 60};
+let chartCanvas, chartCtx;
+
+window.initThree = function() {
+  const container = document.getElementById('three-container');
+  const w = container.clientWidth, h = container.clientHeight;
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x87CEEB);
+  scene.fog = new THREE.Fog(0x87CEEB, 20, 80);
+  camera3d = new THREE.PerspectiveCamera(50, w/h, 0.1, 100);
+  camera3d.position.set(0, 2.5, -4);
+  camera3d.lookAt(0, 0.8, 2);
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(w, h);
+  renderer.shadowMap.enabled = true;
+  container.appendChild(renderer.domElement);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+  const sunLight = new THREE.DirectionalLight(0xffffee, 1.2);
+  sunLight.position.set(10, 20, 10);
+  sunLight.castShadow = true;
+  scene.add(sunLight);
+  
+  // 道路场景
+  const roadWidth = 6, roadLength = 100;
+  const road = new THREE.Mesh(new THREE.PlaneGeometry(roadWidth, roadLength), new THREE.MeshStandardMaterial({color: 0x2a2a2a, roughness: 0.9}));
+  road.rotation.x = -Math.PI/2;
+  road.receiveShadow = true;
+  scene.add(road);
+  
+  const grassMat = new THREE.MeshStandardMaterial({color: 0x3a7d44, roughness: 1.0});
+  const leftGrass = new THREE.Mesh(new THREE.PlaneGeometry(10, roadLength), grassMat);
+  leftGrass.rotation.x = -Math.PI/2;
+  leftGrass.position.x = -(roadWidth/2 + 5);
+  leftGrass.receiveShadow = true;
+  scene.add(leftGrass);
+  const rightGrass = new THREE.Mesh(new THREE.PlaneGeometry(10, roadLength), grassMat);
+  rightGrass.rotation.x = -Math.PI/2;
+  rightGrass.position.x = (roadWidth/2 + 5);
+  rightGrass.receiveShadow = true;
+  scene.add(rightGrass);
+  
+  // 道路中心虚线
+  const lineMaterial = new THREE.MeshBasicMaterial({color: 0xffffff});
+  const lineWidth = 0.15, lineLength = 2, lineGap = 3;
+  for(let z = -roadLength/2; z < roadLength/2; z += lineLength + lineGap) {
+    const line = new THREE.Mesh(new THREE.PlaneGeometry(lineWidth, lineLength), lineMaterial);
+    line.rotation.x = -Math.PI/2;
+    line.position.set(0, 0.01, z + lineLength/2);
+    scene.add(line);
+  }
+  
+  // 道路边缘实线
+  const edgeMaterial = new THREE.MeshBasicMaterial({color: 0xffffff});
+  const leftEdge = new THREE.Mesh(new THREE.PlaneGeometry(0.2, roadLength), edgeMaterial);
+  leftEdge.rotation.x = -Math.PI/2;
+  leftEdge.position.set(-roadWidth/2, 0.01, 0);
+  scene.add(leftEdge);
+  const rightEdge = new THREE.Mesh(new THREE.PlaneGeometry(0.2, roadLength), edgeMaterial);
+  rightEdge.rotation.x = -Math.PI/2;
+  rightEdge.position.set(roadWidth/2, 0.01, 0);
+  scene.add(rightEdge);
+  
+  // 路边树木装饰
+  const treeTrunkMat = new THREE.MeshStandardMaterial({color: 0x6b4423});
+  const treeFoliageMat = new THREE.MeshStandardMaterial({color: 0x2d5016});
+  for(let i = 0; i < 10; i++) {
+    const side = Math.random() > 0.5 ? 1 : -1;
+    const z = (Math.random() - 0.5) * roadLength * 0.8;
+    const x = side * (roadWidth/2 + 6 + Math.random() * 3);
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.25, 2, 8), treeTrunkMat);
+    trunk.position.set(x, 1, z);
+    trunk.castShadow = true;
+    scene.add(trunk);
+    const foliage = new THREE.Mesh(new THREE.SphereGeometry(1.2, 8, 8), treeFoliageMat);
+    foliage.position.set(x, 2.5, z);
+    foliage.castShadow = true;
+    scene.add(foliage);
+  }
+  
+  // Chart
+  chartCanvas = document.getElementById('chartCanvas');
+  if(chartCanvas) {
+    chartCtx = chartCanvas.getContext('2d');
+    chartCanvas.width = 224;
+    chartCanvas.height = 84;
+  }
+  
+  // Model
+  busGroup = new THREE.Group();
+  scene.add(busGroup);
+  const loader = new FBXLoader();
+  loader.load("http://139.180.169.115:8080/models/nUWAy.fbx",
+    (fbx) => {
+      fbx.scale.set(0.02, 0.02, 0.02);
+      busGroup.add(fbx);
+      console.log('✅ Model loaded');
+    },
+    undefined,
+    (err) => {
+      console.error('❌ Load failed:', err);
+      const fallback = new THREE.Mesh(new THREE.BoxGeometry(3.5, 1.4, 1.6), new THREE.MeshStandardMaterial({color: 0x666666}));
+      fallback.position.y = 1;
+      busGroup.add(fallback);
+    }
+  );
+  
+  headlightL = new THREE.SpotLight(0xffffdd, 1.2, 12, Math.PI/10, 0.25, 1.5);
+  headlightR = headlightL.clone();
+  headlightL.position.set(1.7, 0.9, 0.4);
+  headlightR.position.set(1.7, 0.9, -0.4);
+  scene.add(headlightL, headlightR);
+  headlightL.target = new THREE.Object3D();
+  headlightR.target = new THREE.Object3D();
+  scene.add(headlightL.target, headlightR.target);
+  
+  // 调试面板
+  const panel = document.createElement('div');
+  panel.className = 'tpanel';
+  panel.innerHTML = '<button id="btnReset">重置朝向</button><button id="btnAxes">坐标轴</button><button id="btnReload">重载模型</button><label>相机模式</label><select id="camModeSel"><option value="chase" selected>第一人称 ⭐</option><option value="fixed">固定视角</option><option value="orbit">绕车旋转</option></select><label>半径</label><input id="orbitR" type="range" min="5" max="14" step="0.5" value="8" style="width:60px">';
+  container.appendChild(panel);
+  
+  let axesHelper = null;
+  
+  // 重置按钮
+  panel.querySelector('#btnReset').onclick = () => {
+    vehicleState = {heading:0, linearVel:0, angularVel:0};
+    velocityHistory.linear = [];
+    velocityHistory.angular = [];
+    if(busGroup) busGroup.rotation.y = 0;
+  };
+  
+  // 坐标轴切换
+  panel.querySelector('#btnAxes').onclick = () => {
+    if(axesHelper) {
+      scene.remove(axesHelper);
+      axesHelper = null;
+    } else {
+      axesHelper = new THREE.AxesHelper(3);
+      scene.add(axesHelper);
+    }
+  };
+  
+  // 重载模型
+  panel.querySelector('#btnReload').onclick = () => {
+    if(busGroup) {
+      scene.remove(busGroup);
+      busGroup = new THREE.Group();
+      scene.add(busGroup);
+      const loader = new FBXLoader();
+      loader.load("http://139.180.169.115:8080/models/nUWAy.fbx",
+        (fbx) => {
+          fbx.scale.set(0.02, 0.02, 0.02);
+          busGroup.add(fbx);
+          console.log('✅ Model reloaded');
+        },
+        undefined,
+        (err) => {
+          console.error('❌ Reload failed:', err);
+          const fallback = new THREE.Mesh(new THREE.BoxGeometry(3.5, 1.4, 1.6), new THREE.MeshStandardMaterial({color: 0x666666}));
+          fallback.position.y = 1;
+          busGroup.add(fallback);
+        }
+      );
+    }
+  };
+  
+  // 相机模式切换
+  panel.querySelector('#camModeSel').onchange = e => {
+    camMode = e.target.value;
+    const cameraInfo = document.getElementById('cameraInfo');
+    const modeNames = {
+      'chase': '第一人称俯视',
+      'fixed': '固定视角',
+      'orbit': '绕车旋转'
+    };
+    if(cameraInfo) {
+      cameraInfo.querySelector('.mode').textContent = modeNames[camMode];
+    }
+    console.log('📷 相机模式:', camMode);
+  };
+  
+  // 绕车半径调整
+  panel.querySelector('#orbitR').oninput = e => {
+    orbitRadius = parseFloat(e.target.value);
+  };
+  
+  window.addEventListener("resize", () => {
+    camera3d.aspect = container.clientWidth / container.clientHeight;
+    camera3d.updateProjectionMatrix();
+    renderer.setSize(container.clientWidth, container.clientHeight);
+  });
+  
+  const clock = new THREE.Clock();
+  function animate() {
+    const dt = clock.getDelta();
+    // 车辆旋转更新
+    if(busGroup) {
+      // 更新朝向角度（根据角速度）
+      vehicleState.heading += vehicleState.angularVel * dt;
+      
+      // 应用旋转到模型（车辆原地转向）
+      busGroup.rotation.y = vehicleState.heading;
+      
+      // 更新车灯方向（跟随车头朝向）
+      if(headlightL && headlightR) {
+        const yaw = vehicleState.heading;
+        const targetDist = 4.0;
+        
+        // 车灯目标点：车头前方4米处，随车头旋转
+        const targetX = Math.sin(yaw) * targetDist;
+        const targetZ = Math.cos(yaw) * targetDist;
+        
+        // 左右车灯目标点偏移
+        headlightL.target.position.set(targetX + 0.4, 1.0, targetZ);
+        headlightR.target.position.set(targetX - 0.4, 1.0, targetZ);
+      }
+      
+      // 记录速度历史（用于图表）
+      velocityHistory.linear.push(vehicleState.linearVel);
+      velocityHistory.angular.push(vehicleState.angularVel);
+      
+      // 保持60帧历史
+      if(velocityHistory.linear.length > 60) {
+        velocityHistory.linear.shift();
+        velocityHistory.angular.shift();
+      }
+    }
+    
+    if(chartCtx && velocityHistory.linear.length >= 2) {
+      const width = 224, height = 84, padding = 5;
+      const graphWidth = width - padding * 2, graphHeight = height - padding * 2;
+      
+      // 清空画布
+      chartCtx.fillStyle = 'rgba(0,0,0,0.1)';
+      chartCtx.fillRect(0, 0, width, height);
+      
+      // 绘制网格线
+      chartCtx.strokeStyle = 'rgba(255,255,255,0.1)';
+      chartCtx.lineWidth = 1;
+      for(let i = 0; i <= 4; i++) {
+        const y = padding + (graphHeight / 4) * i;
+        chartCtx.beginPath();
+        chartCtx.moveTo(padding, y);
+        chartCtx.lineTo(width - padding, y);
+        chartCtx.stroke();
+      }
+      
+      // 绘制线速度（绿色）
+      chartCtx.strokeStyle = '#00ff88';
+      chartCtx.lineWidth = 2;
+      chartCtx.beginPath();
+      for(let i=0; i<velocityHistory.linear.length; i++) {
+        const x = padding + (i/60)*graphWidth;
+        const y = height - padding - (Math.abs(velocityHistory.linear[i])/5.56)*graphHeight;
+        if(i===0) chartCtx.moveTo(x,y); else chartCtx.lineTo(x,y);
+      }
+      chartCtx.stroke();
+      
+      // 绘制角速度（蓝色）
+      chartCtx.strokeStyle = '#4a9eff';
+      chartCtx.lineWidth = 2;
+      chartCtx.beginPath();
+      for(let i=0; i<velocityHistory.angular.length; i++) {
+        const x = padding + (i/60)*graphWidth;
+        const y = height - padding - (Math.abs(velocityHistory.angular[i])/2.02)*graphHeight;
+        if(i===0) chartCtx.moveTo(x,y); else chartCtx.lineTo(x,y);
+      }
+      chartCtx.stroke();
+      
+      // 绘制标签
+      chartCtx.fillStyle = '#00ff88';
+      chartCtx.font = '10px monospace';
+      chartCtx.fillText('速度', padding + 2, padding + 10);
+      
+      chartCtx.fillStyle = '#4a9eff';
+      chartCtx.fillText('转向', padding + 2, padding + 22);
+      
+      // 显示当前值
+      const currentLinear = velocityHistory.linear[velocityHistory.linear.length - 1] || 0;
+      const currentAngular = velocityHistory.angular[velocityHistory.angular.length - 1] || 0;
+      
+      chartCtx.fillStyle = '#fff';
+      chartCtx.font = '9px monospace';
+      chartCtx.textAlign = 'right';
+      chartCtx.fillText(`${currentLinear.toFixed(1)} m/s`, width - padding - 2, padding + 10);
+      chartCtx.fillText(`${currentAngular.toFixed(2)} rad/s`, width - padding - 2, padding + 22);
+      chartCtx.textAlign = 'left';
+    }
+    
+    // 相机控制
+    if(camMode==='chase' && busGroup) {
+      // 第一人称俯视：相机在车后上方，跟随车辆旋转
+      const yaw = vehicleState.heading;
+      const camDistance = 4.0;  // 相机距离车辆
+      const camHeight = 2.5;    // 相机高度
+      
+      // 相机位置：车辆后方（考虑旋转）
+      const camX = -Math.sin(yaw) * camDistance;
+      const camZ = -Math.cos(yaw) * camDistance;
+      camera3d.position.set(camX, camHeight, camZ);
+      
+      // 看向前方：车头方向约5米处，高度0.8米（俯视约30度）
+      const lookDistance = 5.0;
+      const lookX = Math.sin(yaw) * lookDistance;
+      const lookZ = Math.cos(yaw) * lookDistance;
+      camera3d.lookAt(lookX, 0.8, lookZ);
+    } else if(camMode==='orbit') {
+      // 绕车旋转视角
+      orbitAngle += dt*0.5;
+      const x = Math.cos(orbitAngle) * orbitRadius;
+      const z = Math.sin(orbitAngle) * orbitRadius;
+      camera3d.position.set(x, 4.5, z);
+      camera3d.lookAt(0, 1.2, 0);
+    } else {
+      // 固定视角：固定位置看向车辆
+      camera3d.position.set(0, 4, 8);
+      camera3d.lookAt(0, 1.2, 0);
+    }
+    renderer.render(scene, camera3d);
+    requestAnimationFrame(animate);
+  }
+  animate();
+};
+
+window.updateBusHeading = function(ang, lin) {
+  if(!busGroup) return;
+  vehicleState.linearVel = lin * 5.56;
+  vehicleState.angularVel = ang * 2.02;
+  if(headlightL && headlightR) {
+    const brightness = 1.2 + Math.abs(lin) * 0.4;
+    headlightL.intensity = brightness;
+    headlightR.intensity = brightness;
+  }
+};
+</script>
+
+<script>
+const EZ10_SPECS = {avgSpeed: 5.56, acceleration: 1.2, deceleration: 1.5, brakingDecel: 3.0, steeringRate: 1.0, returnRate: 1.5};
+const MAX_ANGULAR_VELOCITY = 2.02;
+let ws, gamepadIndex=null, calibActive=false, calibrated=false;
+let calibData={steerMin:1,steerMax:-1,throttleMin:1,throttleMax:-1,brakeMin:1,brakeMax:-1};
+let smooth={linear:0,angular:0};
+const keyState={}, keyPressDuration={w:0,s:0,a:0,d:0};
+
+function initControlSocket(){
+  const hostname = window.location.hostname || 'localhost';
+  ws=new WebSocket(`ws://${hostname}:9090`);
+  ws.onopen=()=>document.getElementById("statusMsg").textContent="🟢 控制已连接";
+  ws.onerror=()=>document.getElementById("statusMsg").textContent="🔴 控制连接失败";
+}
+function startCalibration(){calibActive=true;setTimeout(()=>calibActive=false,4000);}
+function resetCalibration(){calibData={steerMin:1,steerMax:-1,throttleMin:1,throttleMax:-1,brakeMin:1,brakeMax:-1};}
+function confirmCalibration(){
+  calibrated=true;
+  document.getElementById("calibrationPanel").classList.add("hidden");
+  document.getElementById("mainContainer").classList.remove("hidden");
+  document.getElementById("hud").classList.remove("hidden");
+  setTimeout(()=>{initWebRTC();if(typeof window.initThree==='function')window.initThree();},200);
+}
+
+window.addEventListener("gamepadconnected",e=>{gamepadIndex=e.gamepad.index;document.getElementById("g29Status").textContent=`🎮 ${e.gamepad.id} 已连接`;requestAnimationFrame(updateGamepad);});
+function updateGamepad(){
+  if(gamepadIndex===null)return;
+  const gp=navigator.getGamepads()[gamepadIndex];
+  if(!gp)return;
+  let steering=gp.axes[0],throttle=(1-gp.axes[2])/2,brake=(1-gp.axes[3])/2;
+  if(calibActive){calibData.steerMin=Math.min(calibData.steerMin,steering);calibData.steerMax=Math.max(calibData.steerMax,steering);}
+  const steerNorm=(steering-calibData.steerMin)/(calibData.steerMax-calibData.steerMin)*2-1;
+  const steerFiltered=Math.abs(steerNorm)<0.05?0:(steerNorm>0?(steerNorm-0.05)/0.95:(steerNorm+0.05)/0.95);
+  smooth.angular=smooth.angular*0.85+(-steerFiltered)*0.15;
+  smooth.linear=smooth.linear*0.85+(throttle-brake)*0.15;
+  if(typeof window.updateBusHeading==='function')window.updateBusHeading(smooth.angular,smooth.linear);
+  updateHUD();
+  if(calibrated&&ws&&ws.readyState===1)ws.send(JSON.stringify({type:"drive",linear:smooth.linear*EZ10_SPECS.avgSpeed,angular:smooth.angular*MAX_ANGULAR_VELOCITY}));
+  requestAnimationFrame(updateGamepad);
+}
+
+window.addEventListener("keydown",e=>{if(!keyState[e.key.toLowerCase()]){keyState[e.key.toLowerCase()]=true;keyPressDuration[e.key.toLowerCase()]=0;}updateHUDKeys();});
+window.addEventListener("keyup",e=>{keyState[e.key.toLowerCase()]=false;keyPressDuration[e.key.toLowerCase()]=0;updateHUDKeys();});
+
+let lastFrameTime=performance.now();
+function keyboardLoop(){
+  const currentTime=performance.now(), dt=(currentTime-lastFrameTime)/1000;
+  lastFrameTime=currentTime;
+  if(keyState.w)keyPressDuration.w+=dt;
+  if(keyState.s)keyPressDuration.s+=dt;
+  if(keyState.a)keyPressDuration.a+=dt;
+  if(keyState.d)keyPressDuration.d+=dt;
+  let targetLinear=smooth.linear, targetAngular=smooth.angular;
+  if(keyState.w){targetLinear+=EZ10_SPECS.acceleration*dt;targetLinear=Math.min(targetLinear,1);}
+  else if(keyState.s){targetLinear-=EZ10_SPECS.deceleration*dt;targetLinear=Math.max(targetLinear,-1);}
+  else{if(targetLinear>0){targetLinear-=EZ10_SPECS.brakingDecel*dt;targetLinear=Math.max(0,targetLinear);}else if(targetLinear<0){targetLinear+=EZ10_SPECS.brakingDecel*dt;targetLinear=Math.min(0,targetLinear);}}
+  if(keyState.a){targetAngular+=EZ10_SPECS.steeringRate*dt;targetAngular=Math.min(targetAngular,1);}
+  else if(keyState.d){targetAngular-=EZ10_SPECS.steeringRate*dt;targetAngular=Math.max(targetAngular,-1);}
+  else{if(Math.abs(targetAngular)>0.01){const returnDelta=EZ10_SPECS.returnRate*dt;if(targetAngular>0){targetAngular-=returnDelta;targetAngular=Math.max(0,targetAngular);}else{targetAngular+=returnDelta;targetAngular=Math.min(0,targetAngular);}}else targetAngular=0;}
+  if(keyState[" "]){targetLinear=0;targetAngular=0;}
+  if(keyState.r&&window.THREE&&typeof window.updateBusHeading==='function')window.updateBusHeading(0,0);
+  smooth.linear=targetLinear;smooth.angular=targetAngular;
+  if(typeof window.updateBusHeading==='function')window.updateBusHeading(smooth.angular,smooth.linear);
+  updateHUD();
+  if(calibrated&&ws&&ws.readyState===1)ws.send(JSON.stringify({type:"drive",linear:smooth.linear*EZ10_SPECS.avgSpeed,angular:smooth.angular*MAX_ANGULAR_VELOCITY}));
+  requestAnimationFrame(keyboardLoop);
+}
+requestAnimationFrame(keyboardLoop);
+
+function updateHUD(){
+  const linearVel=smooth.linear*EZ10_SPECS.avgSpeed, angularVel=smooth.angular*MAX_ANGULAR_VELOCITY;
+  document.getElementById("hudLinear").innerHTML=`<strong>${linearVel.toFixed(2)}</strong> m/s <span style="color:#888;">(${(Math.abs(smooth.linear)*100).toFixed(0)}%)</span>`;
+  document.getElementById("hudAngular").innerHTML=`<strong>${angularVel.toFixed(2)}</strong> rad/s <span style="color:#888;">(${(Math.abs(smooth.angular)*100).toFixed(0)}%)</span>`;
+}
+function updateHUDKeys(){
+  ["w","a","s","d"," ","r"].forEach(k=>{const id=(k===" ")?"keySp":`key${k.toUpperCase()}`;const el=document.getElementById(id);if(el)el.classList.toggle("active",!!keyState[k]);});
+}
+
+const cams=[{id:1,stream:'CameraFrontLeft'},{id:2,stream:'CameraRear'},{id:3,stream:'CameraFrontRight'},{id:4,stream:'CameraFront'}];
+async function initWebRTC(){for(const c of cams)await initPlayer(c);}
+async function initPlayer(c){
+  const v=document.getElementById(`video-${c.id}`);const pc=new RTCPeerConnection();
+  pc.ontrack=e=>v.srcObject=e.streams[0];pc.addTransceiver("video",{direction:"recvonly"});
+  const offer=await pc.createOffer();await pc.setLocalDescription(offer);
+  const api=`http://${location.hostname}:1985/rtc/v1/play/`;
+  const streamurl=`webrtc://${location.hostname}/live/${c.stream}`;
+  try{const res=await fetch(api,{method:"POST",body:JSON.stringify({api,streamurl,sdp:offer.sdp})});const data=await res.json();await pc.setRemoteDescription({type:"answer",sdp:data.sdp});}catch(err){console.error(`❌ ${c.stream} 连接失败:`,err);}
+}
+
+window.addEventListener("DOMContentLoaded",()=>initControlSocket());
+</script>
+</body>
+</html>

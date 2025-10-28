@@ -1,0 +1,15 @@
+[Unit]
+Description=Multi-Camera Stream Service
+After=network.target
+
+[Service]
+Type=forking
+User=orin
+WorkingDirectory=/home/orin/Documents/bluet
+ExecStart=/home/orin/Documents/bluet/multi_camera_stream.sh
+ExecStop=/home/orin/Documents/bluet/stop_streams.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

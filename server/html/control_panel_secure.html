@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Secure G29 Control Panel + RTT Monitor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body {
+  background: #0a0e27;
+  color: #eee;
+  font-family: 'Segoe UI', sans-serif;
+  text-align: center;
+  margin: 0;
+  padding: 0;
+}
+h1 { color: #00ff88; margin: 20px 0; }
+#status { margin: 8px; color: #888; }
+#rtt { color: #00ff88; margin: 4px 0; }
+.btn { padding: 10px 20px; background: rgba(255,255,255,0.1); border: none; color: white; border-radius: 6px; margin: 6px; cursor: pointer;}
+.btn:hover { background: #00ff88; color: #000; }
+</style>
+</head>
+<body>
+  <h1>🔒 Secure Remote Driving Control</h1>
+  <div id="status">Connecting to WSS server...</div>
+  <div id="rtt">RTT: -- ms</div>
+  <div>
+    <button class="btn" onclick="sendDrive(0.3,0)">Forward</button>
+    <button class="btn" onclick="sendDrive(-0.3,0)">Backward</button>
+    <button class="btn" onclick="sendDrive(0,0.5)">Left</button>
+    <button class="btn" onclick="sendDrive(0,-0.5)">Right</button>
+    <button class="btn" onclick="sendDrive(0,0)">Stop</button>
+  </div>
+  <div>
+    <button class="btn" onclick="startPing()">🔄 Start Ping Test</button>
+  </div>
+
+<script>
+let ws, pingTimer;
+let connected = false;
+
+function connectWS() {
+  const url = `wss://${window.location.hostname}:9443/?token=test123`;
+  ws = new WebSocket(url);
+  const status = document.getElementById("status");
+
+  ws.onopen = () => {
+    connected = true;
+    status.textContent = "🟢 Connected to Secure Bridge";
+    status.style.color = "#00ff88";
+  };
+
+  ws.onclose = () => {
+    connected = false;
+    status.textContent = "🔴 Disconnected. Reconnecting...";
+    status.style.color = "#ff5555";
+    setTimeout(connectWS, 3000);
+  };
+
+  ws.onerror = (e) => {
+    status.textContent = "⚠️ Connection Error";
+    console.error(e);
+  };
+
+  ws.onmessage = (msg) => {
+    try {
+      const data = JSON.parse(msg.data);
+      if (data.type === "pong") {
+        const rttMs = (Date.now()/1000 - data.t) * 1000;
+        document.getElementById("rtt").textContent = `RTT: ${rttMs.toFixed(1)} ms`;
+      }
+    } catch (e) { console.warn(e); }
+  };
+}
+
+function sendDrive(lin, ang) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({
+    type: "drive",
+    linear: lin,
+    angular: ang,
+    t: Date.now()/1000
+  }));
+}
+
+function startPing() {
+  if (pingTimer) clearInterval(pingTimer);
+  pingTimer = setInterval(() => {
+    if (connected) {
+      ws.send(JSON.stringify({ type: "ping", t: Date.now()/1000 }));
+    }
+  }, 1000);
+}
+
+window.onload = connectWS;
+</script>
+</body>
+</html>

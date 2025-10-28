@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WebRTC Multi-Camera + G29 Calibrated Control</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body {
+  background:linear-gradient(135deg,#0a0e27 0%,#1a1e35 100%);
+  font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;
+  color:white;min-height:100vh;
+  display:flex;flex-direction:column;align-items:center;
+}
+.header{padding:20px;text-align:center;}
+h1{color:#00ff88;text-shadow:0 0 15px rgba(0,255,136,0.4);}
+.subtitle{color:#888;font-size:1em;}
+#mainContainer {display:flex;flex-direction:column;align-items:center;flex:1;width:100%;}
+.video-grid-4 {
+  position:relative;
+  width:100%;
+  max-width:1200px;
+  height:700px;
+  display:grid;
+  grid-template-areas:
+  "top top top"
+  "left center right"
+  "bottom bottom bottom";
+  grid-template-columns:1fr 1fr 1fr;
+  grid-template-rows:1fr 1fr 1fr;
+  gap:10px;
+  margin-top:15px;
+}
+.video-card{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);
+  border-radius:10px;overflow:hidden;display:flex;flex-direction:column;}
+.video-header{padding:5px 10px;background:rgba(0,0,0,0.4);font-size:0.9em;border-bottom:1px solid #00ff88;}
+video{width:100%;height:100%;object-fit:contain;background:#000;}
+#frontCam{grid-area:top;}
+#rearCam{grid-area:bottom;}
+#leftCam{grid-area:left;}
+#rightCam{grid-area:right;}
+#centerVehicle {
+  grid-area:center;
+  display:flex;justify-content:center;align-items:center;
+  background:rgba(0,0,0,0.3);
+  border-radius:15px;
+}
+#centerVehicle img {
+  width:160px;opacity:0.9;filter:drop-shadow(0 0 10px #00ff88);
+}
+
+/* Calibration panel */
+.control-panel{
+  margin-top:30px;width:380px;text-align:center;
+  background:rgba(255,255,255,0.05);
+  padding:20px;border-radius:10px;
+  border:1px solid rgba(255,255,255,0.1);
+}
+.control-panel h3{color:#00ff88;margin-bottom:10px;}
+.bar-bg{background:rgba(255,255,255,0.1);border-radius:5px;margin-bottom:5px;height:10px;}
+.bar{height:10px;background:#00ff88;border-radius:5px;transition:width 0.05s linear;}
+button{
+  margin:5px;padding:8px 14px;border:none;border-radius:6px;cursor:pointer;
+  background:rgba(255,255,255,0.1);color:#fff;
+}
+button:hover{background:#00ff88;color:#000;}
+#statusMsg{margin-top:10px;color:#888;}
+.hidden{display:none;}
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>🛰️ Shuttle Remote Driving Control Panel</h1>
+    <p class="subtitle">WebRTC Multi-Camera + Logitech G29 Control (ROS2 Bridge)</p>
+  </div>
+
+  <!-- Calibration Phase -->
+  <div id="calibrationPanel" class="control-panel">
+    <h3>🎮 G29 Calibration</h3>
+    <div id="g29Status">Waiting for G29 connection...</div>
+    <div id="calibMsg">Move wheel & pedals to extremes then click Start</div>
+    <button onclick="startCalibration()">Start</button>
+    <button onclick="confirmCalibration()">Confirm Calibration</button>
+    <button onclick="resetCalibration()">Reset</button>
+
+    <div style="margin-top:10px;text-align:left;">
+      <div>Steering <span id="steerVal">0</span></div>
+      <div class="bar-bg"><div id="steerBar" class="bar" style="width:50%"></div></div>
+      <div>Throttle <span id="throttleVal">0</span></div>
+      <div class="bar-bg"><div id="throttleBar" class="bar" style="width:0%"></div></div>
+      <div>Brake <span id="brakeVal">0</span></div>
+      <div class="bar-bg"><div id="brakeBar" class="bar" style="width:0%"></div></div>
+    </div>
+    <p id="statusMsg">Connecting to control server...</p>
+  </div>
+
+  <!-- Main Multi-Camera View -->
+  <div id="mainContainer" class="hidden">
+    <div class="video-grid-4">
+      <div class="video-card" id="frontCam"><div class="video-header">Front Camera</div><video id="video-4" autoplay playsinline muted></video></div>
+      <div class="video-card" id="rearCam"><div class="video-header">Rear Camera</div><video id="video-2" autoplay playsinline muted></video></div>
+      <div class="video-card" id="leftCam"><div class="video-header">Left Camera</div><video id="video-1" autoplay playsinline muted></video></div>
+      <div class="video-card" id="rightCam"><div class="video-header">Right Camera</div><video id="video-3" autoplay playsinline muted></video></div>
+      <div id="centerVehicle"><img src="https://cdn-icons-png.flaticon.com/512/3317/3317744.png" alt="vehicle"></div>
+    </div>
+  </div>
+
+<script>
+/* ---------------- G29 Calibration Logic ---------------- */
+let gamepadIndex=null,calibActive=false,calibrated=false;
+let calibData={steerMin:1,steerMax:-1,throttleMin:1,throttleMax:-1,brakeMin:1,brakeMax:-1};
+let smooth={linear:0,angular:0};
+const deadzone=0.05;
+let ws;
+
+function initControlSocket(){
+  ws=new WebSocket(`ws://${window.location.hostname}:9090`);
+  const msg=document.getElementById("statusMsg");
+  ws.onopen=()=>{msg.textContent="🟢 Connected";msg.style.color="#00ff88";};
+  ws.onclose=()=>{msg.textContent="🔴 Disconnected";msg.style.color="#ff4444";};
+}
+function startCalibration(){
+  calibActive=true;
+  document.getElementById("calibMsg").textContent="⏳ Move all controls to extremes...";
+  setTimeout(()=>{calibActive=false;document.getElementById("calibMsg").textContent="✅ Calibration done! Click Confirm.";},5000);
+}
+function resetCalibration(){
+  calibData={steerMin:1,steerMax:-1,throttleMin:1,throttleMax:-1,brakeMin:1,brakeMax:-1};
+  document.getElementById("calibMsg").textContent="Calibration reset.";
+}
+function confirmCalibration(){
+  calibrated=true;
+  document.getElementById("calibrationPanel").classList.add("hidden");
+  document.getElementById("mainContainer").classList.remove("hidden");
+  initWebRTC(); // 启动视频
+}
+window.addEventListener("gamepadconnected",(e)=>{
+  gamepadIndex=e.gamepad.index;
+  document.getElementById("g29Status").textContent=`🎮 ${e.gamepad.id} Connected`;
+  requestAnimationFrame(updateGamepad);
+});
+window.addEventListener("gamepaddisconnected",()=>{
+  gamepadIndex=null;
+  document.getElementById("g29Status").textContent="❌ Gamepad disconnected";
+});
+
+function normalize(v,min,max){
+  if(max-min<0.01)return 0;
+  let n=(v-min)/(max-min);
+  return Math.max(0,Math.min(1,n));
+}
+function applyDeadzone(x,d){
+  if(Math.abs(x)<d)return 0;
+  return (x>0)?(x-d)/(1-d):(x+d)/(1-d);
+}
+
+function updateGamepad(){
+  if(gamepadIndex===null)return;
+  const gp=navigator.getGamepads()[gamepadIndex];
+  if(!gp)return;
+
+  let steering=gp.axes[0];
+  let throttle=(1-gp.axes[2])/2;
+  let brake=(1-gp.axes[3])/2;
+
+  if(calibActive){
+    calibData.steerMin=Math.min(calibData.steerMin,steering);
+    calibData.steerMax=Math.max(calibData.steerMax,steering);
+    calibData.throttleMin=Math.min(calibData.throttleMin,throttle);
+    calibData.throttleMax=Math.max(calibData.throttleMax,throttle);
+    calibData.brakeMin=Math.min(calibData.brakeMin,brake);
+    calibData.brakeMax=Math.max(calibData.brakeMax,brake);
+  }
+
+  const steerNorm=(steering-calibData.steerMin)/(calibData.steerMax-calibData.steerMin)*2-1;
+  const throttleNorm=normalize(throttle,calibData.throttleMin,calibData.throttleMax);
+  const brakeNorm=normalize(brake,calibData.brakeMin,calibData.brakeMax);
+
+  const steerFiltered=applyDeadzone(steerNorm,deadzone);
+  const alpha=0.15;
+  const targetLinear=throttleNorm-brakeNorm;
+  const targetAngular=-steerFiltered;
+  smooth.linear=smooth.linear*(1-alpha)+targetLinear*alpha;
+  smooth.angular=smooth.angular*(1-alpha)+targetAngular*alpha;
+
+  document.getElementById("steerVal").textContent=smooth.angular.toFixed(2);
+  document.getElementById("throttleVal").textContent=throttleNorm.toFixed(2);
+  document.getElementById("brakeVal").textContent=brakeNorm.toFixed(2);
+  document.getElementById("steerBar").style.width=`${50+smooth.angular*50}%`;
+  document.getElementById("throttleBar").style.width=`${throttleNorm*100}%`;
+  document.getElementById("brakeBar").style.width=`${brakeNorm*100}%`;
+
+  if(calibrated && ws && ws.readyState===WebSocket.OPEN){
+    ws.send(JSON.stringify({type:"drive",linear:smooth.linear,angular:smooth.angular}));
+  }
+  requestAnimationFrame(updateGamepad);
+}
+
+/* ---------------- WebRTC Multi-camera ---------------- */
+const cameras=[
+  {id:1,name:'CameraFrontLeft',stream:'CameraFrontLeft'},
+  {id:2,name:'CameraRear',stream:'CameraRear'},
+  {id:3,name:'CameraFrontRight',stream:'CameraFrontRight'},
+  {id:4,name:'CameraFront',stream:'CameraFront'}
+];
+async function initWebRTC(){
+  for(const cam of cameras){
+    await initPlayer(cam);
+  }
+}
+async function initPlayer(cam){
+  const video=document.getElementById(`video-${cam.id}`);
+  try{
+    const pc=new RTCPeerConnection();
+    pc.ontrack=e=>{video.srcObject=e.streams[0];};
+    pc.addTransceiver("video",{direction:"recvonly"});
+    const offer=await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const api=`http://${window.location.hostname}:1985/rtc/v1/play/`;
+    const streamurl=`webrtc://${window.location.hostname}/live/${cam.stream}`;
+    const res=await fetch(api,{method:"POST",body:JSON.stringify({api,streamurl,sdp:offer.sdp})});
+    const data=await res.json();
+    await pc.setRemoteDescription({type:"answer",sdp:data.sdp});
+  }catch(err){console.error(cam.name,"WebRTC error",err);}
+}
+
+/* ---------------- Init ---------------- */
+window.addEventListener("DOMContentLoaded",()=>{
+  initControlSocket();
+});
+</script>
+</body>
+</html>

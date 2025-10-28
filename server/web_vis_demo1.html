@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WebRTC + G29 + Keyboard HUD + 3D Shuttle</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+:root{--tile:clamp(280px,30vw,540px);--center-scale:0.75;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{
+  background:linear-gradient(135deg,#0a0e27 0%,#1a1e35 100%);
+  color:white;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;
+  min-height:100vh;display:flex;flex-direction:column;align-items:center;
+}
+.header{padding:18px;text-align:center;}
+h1{color:#00ff88;text-shadow:0 0 15px rgba(0,255,136,0.4);font-size:clamp(20px,2.2vw,28px);}
+.subtitle{color:#9aa;font-size:clamp(12px,1.2vw,14px);}
+.hidden{display:none;}
+.control-panel{margin-top:20px;width:min(92vw,480px);text-align:center;background:rgba(255,255,255,0.05);padding:18px;border-radius:12px;border:1px solid rgba(255,255,255,0.12);}
+.control-panel h3{color:#00ff88;margin-bottom:8px;}
+.bar-bg{background:rgba(255,255,255,0.12);border-radius:6px;margin:6px 0;height:10px;}
+.bar{height:10px;background:#00ff88;border-radius:6px;transition:width 0.05s linear;}
+button{margin:6px;padding:9px 16px;border:none;border-radius:8px;cursor:pointer;background:rgba(255,255,255,0.1);color:#fff;}
+button:hover{background:#00ff88;color:#000;}
+#mainContainer{width:100%;display:grid;place-items:center;grid-template-columns:1fr auto 1fr;grid-template-rows:1fr auto 1fr;gap:min(1.4vw,16px);padding:min(2vw,20px);}
+.slot{display:flex;align-items:center;justify-content:center;}
+.tile{width:var(--tile);aspect-ratio:16/9;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;}
+.tile-header{padding:6px 10px;background:rgba(0,0,0,0.45);border-bottom:1px solid #00ff88;font-size:0.95em;}
+.tile-body{flex:1;display:flex;align-items:center;justify-content:center;background:#000;}
+video{width:100%;height:100%;object-fit:contain;background:#000;}
+#three-container{width:calc(var(--tile)*var(--center-scale));height:calc(var(--tile)*var(--center-scale)*0.6);background:rgba(10,14,39,0.6);border:1px dashed rgba(0,255,136,0.25);border-radius:12px;position:relative;}
+#hud{
+  position:fixed;right:15px;bottom:15px;
+  background:rgba(0,0,0,0.5);
+  border:1px solid rgba(0,255,136,0.3);
+  border-radius:10px;
+  padding:12px 16px;
+  font-size:14px;
+  min-width:200px;
+  backdrop-filter:blur(6px);
+  box-shadow:0 0 12px rgba(0,255,136,0.2);
+}
+#hud h4{margin:0 0 6px;color:#00ff88;font-weight:600;}
+#hud .keys{display:flex;justify-content:space-around;margin-top:4px;}
+.key{width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.08);color:#bbb;transition:0.1s;}
+.key.active{background:#00ff88;color:#000;transform:scale(1.1);}
+.tpanel{
+  position:absolute;top:8px;right:8px;z-index:10;
+  background:rgba(0,0,0,0.55);border:1px solid rgba(0,255,136,0.35);
+  border-radius:8px;padding:6px 8px;font-size:13px;color:#bff;
+  display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity 0.3s ease;
+}
+#three-container:hover .tpanel{
+  opacity:1;
+  pointer-events:auto;
+}
+.tpanel select,.tpanel input[type="range"]{
+  background:rgba(255,255,255,0.08);color:#fff;border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:4px 6px;
+}
+.tpanel button{padding:6px 10px;margin:0;background:rgba(255,255,255,0.08);}
+.tpanel label{font-size:12px;color:#cfe;opacity:0.9;margin-left:6px;}
+#modelStatus{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  color:#00ff88;font-size:12px;text-align:center;
+  background:rgba(0,0,0,0.7);padding:10px 15px;border-radius:8px;
+  display:none;
+}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>🛰️ WebRTC + Logitech G29 + Keyboard HUD + 3D Shuttle</h1>
+  <p class="subtitle">四路相机等尺寸 | 中心 3D 模型联动方向与灯光</p>
+</div>
+
+<div id="calibrationPanel" class="control-panel">
+  <h3>🎮 Logitech G29 校准</h3>
+  <div id="g29Status">等待连接 G29 ...（按任意按键唤醒）</div>
+  <div id="calibMsg">左右打满方向、油门刹车踩到底，然后点开始</div>
+  <div><button onclick="startCalibration()">开始校准</button><button onclick="confirmCalibration()">确认并进入监控</button><button onclick="resetCalibration()">重置</button></div>
+  <div>
+    <div>Steering <span id="steerVal">0</span></div><div class="bar-bg"><div id="steerBar" class="bar" style="width:50%"></div></div>
+    <div>Throttle <span id="throttleVal">0</span></div><div class="bar-bg"><div id="throttleBar" class="bar"></div></div>
+    <div>Brake <span id="brakeVal">0</span></div><div class="bar-bg"><div id="brakeBar" class="bar"></div></div>
+  </div>
+  <p id="statusMsg">正在连接控制服务器...</p>
+</div>
+
+<div id="mainContainer" class="hidden">
+  <div class="slot" style="grid-row:1;grid-column:2;"><div class="tile"><div class="tile-header">Front</div><div class="tile-body"><video id="video-4" autoplay playsinline muted></video></div></div></div>
+  <div class="slot" style="grid-row:2;grid-column:1;"><div class="tile"><div class="tile-header">FrontLeft</div><div class="tile-body"><video id="video-1" autoplay playsinline muted></video></div></div></div>
+  <div class="slot" style="grid-row:2;grid-column:2;">
+    <div id="three-container">
+      <div id="modelStatus">加载模型中...</div>
+    </div>
+  </div>
+  <div class="slot" style="grid-row:2;grid-column:3;"><div class="tile"><div class="tile-header">FrontRight</div><div class="tile-body"><video id="video-3" autoplay playsinline muted></video></div></div></div>
+  <div class="slot" style="grid-row:3;grid-column:2;"><div class="tile"><div class="tile-header">Rear</div><div class="tile-body"><video id="video-2" autoplay playsinline muted></video></div></div></div>
+</div>
+
+<div id="hud" class="hidden">
+  <h4>⌨️ 键盘控制状态</h4>
+  <div style="font-size:12px;margin-bottom:4px;color:#aaa;">
+    速度: <span id="hudLinear">0.00</span><br>
+    转向: <span id="hudAngular">0.00</span>
+  </div>
+  <div class="keys">
+    <div id="keyW" class="key" title="加速">W</div>
+    <div id="keyA" class="key" title="左转">A</div>
+    <div id="keyS" class="key" title="减速">S</div>
+    <div id="keyD" class="key" title="右转">D</div>
+    <div id="keySp" class="key" title="紧急制动">⎵</div>
+    <div id="keyR" class="key" title="重置朝向">R</div>
+  </div>
+  <div style="font-size:10px;margin-top:6px;color:#888;line-height:1.3;">
+    💡 提示：长按 WASD 渐进加速/转向<br>
+    松开自动减速/回正
+  </div>
+</div>
+
+<!-- 使用 CDN 统一加载 Three.js -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+
+// 全局变量
+window.THREE = THREE; // 暴露给非模块脚本使用
+let scene, camera3d, renderer, busGroup, headlightL, headlightR;
+let camMode = 'fixed';
+let orbitAngle = 0, orbitRadius = 8;
+
+// 车辆运动状态
+let vehicleState = {
+  position: new THREE.Vector3(0, 0, 0),  // 当前位置
+  velocity: new THREE.Vector3(0, 0, 0),  // 速度向量
+  heading: 0,                             // 朝向角度 (弧度)
+  linearVel: 0,                           // 线速度 (m/s)
+  angularVel: 0                           // 角速度 (rad/s)
+};
+
+// 运动轨迹记录
+const trailPoints = [];
+const maxTrailPoints = 100;
+let trailLine = null;
+
+// Three.js 初始化
+window.initThree = function() {
+  const container = document.getElementById('three-container');
+  const w = container.clientWidth, h = container.clientHeight;
+  const statusDiv = document.getElementById('modelStatus');
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0e27);
+  scene.fog = new THREE.Fog(0x0a0e27, 15, 40);
+
+  camera3d = new THREE.PerspectiveCamera(45, w/h, 0.1, 100);
+  camera3d.position.set(6, 4.5, 8);
+  camera3d.lookAt(0, 1.2, 0);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setSize(w, h);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  container.appendChild(renderer.domElement);
+
+  // 光源
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+  scene.add(ambientLight);
+  
+  const mainLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  mainLight.position.set(5, 6, 5);
+  mainLight.castShadow = true;
+  mainLight.shadow.mapSize.width = 2048;
+  mainLight.shadow.mapSize.height = 2048;
+  scene.add(mainLight);
+
+  const fillLight = new THREE.DirectionalLight(0x4a9eff, 0.3);
+  fillLight.position.set(-5, 3, -5);
+  scene.add(fillLight);
+
+  // 地面
+  const ground = new THREE.Mesh(
+    new THREE.CircleGeometry(15, 64),
+    new THREE.MeshStandardMaterial({ 
+      color: 0x111622, 
+      roughness: 0.9,
+      metalness: 0.1
+    })
+  );
+  ground.rotation.x = -Math.PI/2;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  // 网格辅助
+  const grid = new THREE.GridHelper(20, 20, 0x2a3f5f, 0x1a2f4f);
+  grid.position.y = 0.01;
+  scene.add(grid);
+
+  // 初始化轨迹线
+  const trailGeometry = new THREE.BufferGeometry();
+  const trailMaterial = new THREE.LineBasicMaterial({ 
+    color: 0x00ff88, 
+    linewidth: 2,
+    transparent: true,
+    opacity: 0.6
+  });
+  trailLine = new THREE.Line(trailGeometry, trailMaterial);
+  scene.add(trailLine);
+
+  // 加载模型
+  createBus();
+
+  // 调试面板
+  const panel = document.createElement('div');
+  panel.className = 'tpanel';
+  panel.innerHTML = `
+    <button id="btnReset">重置视角+位置</button>
+    <button id="btnAxes">坐标轴</button>
+    <button id="btnReload">重载模型</button>
+    <button id="btnTrail">轨迹</button>
+    <label>相机模式</label>
+    <select id="camModeSel">
+      <option value="fixed">固定视角</option>
+      <option value="orbit">绕车旋转</option>
+      <option value="chase">追踪第一人称</option>
+    </select>
+    <label>半径</label>
+    <input id="orbitR" type="range" min="5" max="14" step="0.5" value="8" />
+  `;
+  container.appendChild(panel);
+
+  let axesHelper = null;
+  let showTrail = true;
+  
+  panel.querySelector('#btnReset').onclick = () => {
+    camMode = 'fixed';
+    panel.querySelector('#camModeSel').value = 'fixed';
+    camera3d.position.set(6, 4.5, 8);
+    camera3d.lookAt(0, 1.2, 0);
+    // 重置车辆位置
+    vehicleState.position.set(0, 0, 0);
+    vehicleState.velocity.set(0, 0, 0);
+    vehicleState.heading = 0;
+    vehicleState.linearVel = 0;
+    vehicleState.angularVel = 0;
+    trailPoints.length = 0;
+  };
+  
+  panel.querySelector('#btnAxes').onclick = () => {
+    if (axesHelper) {
+      scene.remove(axesHelper);
+      axesHelper = null;
+    } else {
+      axesHelper = new THREE.AxesHelper(5);
+      scene.add(axesHelper);
+    }
+  };
+  
+  panel.querySelector('#btnTrail').onclick = () => {
+    showTrail = !showTrail;
+    if (trailLine) {
+      trailLine.visible = showTrail;
+    }
+    panel.querySelector('#btnTrail').textContent = showTrail ? '轨迹 ✓' : '轨迹 ✗';
+  };
+  
+  panel.querySelector('#btnReload').onclick = createBus;
+  panel.querySelector('#camModeSel').onchange = e => { camMode = e.target.value; };
+  panel.querySelector('#orbitR').oninput = e => { orbitRadius = parseFloat(e.target.value); };
+
+  // 窗口调整
+  window.addEventListener("resize", () => {
+    const w = container.clientWidth, h = container.clientHeight;
+    camera3d.aspect = w / h;
+    camera3d.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  });
+
+  // 动画循环
+  const clock = new THREE.Clock();
+  function animate() {
+    const dt = clock.getDelta();
+    
+    // ========== 车辆运动物理模拟 ==========
+    updateVehiclePhysics(dt);
+    
+    // ========== 相机控制 ==========
+    if (camMode === 'orbit') {
+      orbitAngle += dt * 0.5;
+      const x = Math.cos(orbitAngle) * orbitRadius;
+      const z = Math.sin(orbitAngle) * orbitRadius;
+      camera3d.position.set(
+        vehicleState.position.x + x, 
+        vehicleState.position.y + 4.5, 
+        vehicleState.position.z + z
+      );
+      camera3d.lookAt(vehicleState.position.x, vehicleState.position.y + 1.2, vehicleState.position.z);
+    } else if (camMode === 'chase' && busGroup) {
+      const yaw = vehicleState.heading;
+      const backX = -Math.cos(yaw) * 3.2;
+      const backZ = -Math.sin(yaw) * 3.2;
+      const sideX = Math.sin(yaw) * 0.2;
+      const sideZ = -Math.cos(yaw) * 0.2;
+      
+      const targetPos = new THREE.Vector3(
+        vehicleState.position.x + backX + sideX,
+        vehicleState.position.y + 1.8,
+        vehicleState.position.z + backZ + sideZ
+      );
+      camera3d.position.lerp(targetPos, 0.12);
+      
+      const lookX = vehicleState.position.x + 2 * Math.cos(yaw);
+      const lookZ = vehicleState.position.z + 2 * Math.sin(yaw);
+      camera3d.lookAt(lookX, vehicleState.position.y + 1.0, lookZ);
+    } else if (camMode === 'fixed') {
+      // 固定视角，但看向车辆当前位置
+      camera3d.lookAt(vehicleState.position.x, vehicleState.position.y + 1.2, vehicleState.position.z);
+    }
+    
+    renderer.render(scene, camera3d);
+    requestAnimationFrame(animate);
+  }
+  animate();
+};
+
+// 车辆物理模拟更新
+function updateVehiclePhysics(deltaTime) {
+  if (!busGroup) return;
+  
+  // 更新朝向角度（根据角速度）
+  vehicleState.heading += vehicleState.angularVel * deltaTime;
+  
+  // 计算速度向量（根据朝向和线速度）
+  const velocityX = Math.cos(vehicleState.heading) * vehicleState.linearVel;
+  const velocityZ = Math.sin(vehicleState.heading) * vehicleState.linearVel;
+  vehicleState.velocity.set(velocityX, 0, velocityZ);
+  
+  // 更新位置
+  vehicleState.position.x += velocityX * deltaTime;
+  vehicleState.position.z += velocityZ * deltaTime;
+  
+  // 限制车辆在场地范围内（10米半径）
+  const distFromCenter = Math.sqrt(
+    vehicleState.position.x ** 2 + vehicleState.position.z ** 2
+  );
+  if (distFromCenter > 9.5) {
+    // 碰到边界，停止前进
+    const angle = Math.atan2(vehicleState.position.z, vehicleState.position.x);
+    vehicleState.position.x = Math.cos(angle) * 9.5;
+    vehicleState.position.z = Math.sin(angle) * 9.5;
+    vehicleState.linearVel = 0;
+  }
+  
+  // 应用到 3D 模型
+  busGroup.position.copy(vehicleState.position);
+  busGroup.rotation.y = vehicleState.heading;
+  
+  // 更新车灯位置和方向
+  if (headlightL && headlightR) {
+    const carYaw = vehicleState.heading;
+    
+    // 车灯跟随车辆位置
+    headlightL.position.set(
+      vehicleState.position.x + Math.cos(carYaw) * 1.7 + Math.sin(carYaw) * 0.4,
+      vehicleState.position.y + 0.9,
+      vehicleState.position.z + Math.sin(carYaw) * 1.7 - Math.cos(carYaw) * 0.4
+    );
+    headlightR.position.set(
+      vehicleState.position.x + Math.cos(carYaw) * 1.7 - Math.sin(carYaw) * 0.4,
+      vehicleState.position.y + 0.9,
+      vehicleState.position.z + Math.sin(carYaw) * 1.7 + Math.cos(carYaw) * 0.4
+    );
+    
+    // 车灯目标点
+    headlightL.target.position.set(
+      vehicleState.position.x + Math.cos(carYaw) * 4,
+      vehicleState.position.y + 1,
+      vehicleState.position.z + Math.sin(carYaw) * 4 + 0.4
+    );
+    headlightR.target.position.set(
+      vehicleState.position.x + Math.cos(carYaw) * 4,
+      vehicleState.position.y + 1,
+      vehicleState.position.z + Math.sin(carYaw) * 4 - 0.4
+    );
+  }
+  
+  // 更新轨迹
+  if (vehicleState.linearVel !== 0) {
+    trailPoints.push(vehicleState.position.clone());
+    if (trailPoints.length > maxTrailPoints) {
+      trailPoints.shift();
+    }
+    
+    // 更新轨迹线
+    if (trailLine && trailPoints.length > 1) {
+      const positions = new Float32Array(trailPoints.length * 3);
+      for (let i = 0; i < trailPoints.length; i++) {
+        positions[i * 3] = trailPoints[i].x;
+        positions[i * 3 + 1] = trailPoints[i].y + 0.05;
+        positions[i * 3 + 2] = trailPoints[i].z;
+      }
+      trailLine.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      trailLine.geometry.attributes.position.needsUpdate = true;
+    }
+  }
+}
+
+// 创建/加载模型
+function createBus() {
+  const statusDiv = document.getElementById('modelStatus');
+  statusDiv.style.display = 'block';
+  statusDiv.textContent = '加载模型中...';
+
+  if (busGroup) {
+    scene.remove(busGroup);
+  }
+  if (headlightL) scene.remove(headlightL, headlightR, headlightL.target, headlightR.target);
+
+  busGroup = new THREE.Group();
+  scene.add(busGroup);
+
+  const loader = new FBXLoader();
+  const modelUrl = "http://139.180.169.115:8080/models/nUWAy.fbx";
+
+  loader.load(
+    modelUrl,
+    (fbx) => {
+      // 成功加载
+      fbx.scale.set(0.02, 0.02, 0.02);
+      fbx.position.set(0, 0, 0);
+      
+      fbx.traverse(child => {
+        if (child.isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+          if (child.material) {
+            child.material.needsUpdate = true;
+          }
+        }
+      });
+      
+      busGroup.add(fbx);
+      statusDiv.textContent = '✅ 模型加载成功';
+      setTimeout(() => { statusDiv.style.display = 'none'; }, 2000);
+      console.log('✅ Shuttle FBX 加载成功', fbx);
+    },
+    (xhr) => {
+      // 加载进度
+      if (xhr.lengthComputable) {
+        const percent = Math.round((xhr.loaded / xhr.total) * 100);
+        statusDiv.textContent = `加载中 ${percent}%`;
+        console.log(`📦 模型加载进度: ${percent}%`);
+      }
+    },
+    (error) => {
+      // 加载失败
+      console.error('❌ FBX 加载失败:', error);
+      statusDiv.textContent = '❌ 加载失败，使用备用模型';
+      statusDiv.style.color = '#ff4a4a';
+      
+      // 创建简单的备用模型
+      const fallbackGeometry = new THREE.BoxGeometry(3.5, 1.4, 1.6);
+      const fallbackMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x666666,
+        roughness: 0.7,
+        metalness: 0.3
+      });
+      const fallback = new THREE.Mesh(fallbackGeometry, fallbackMaterial);
+      fallback.position.y = 1;
+      fallback.castShadow = true;
+      fallback.receiveShadow = true;
+      busGroup.add(fallback);
+      
+      setTimeout(() => { 
+        statusDiv.style.display = 'none'; 
+        statusDiv.style.color = '#00ff88';
+      }, 3000);
+    }
+  );
+
+  // 创建车灯
+  headlightL = new THREE.SpotLight(0xffffdd, 1.2, 12, Math.PI / 10, 0.25, 1.5);
+  headlightR = headlightL.clone();
+  headlightL.position.set(1.7, 0.9, 0.4);
+  headlightR.position.set(1.7, 0.9, -0.4);
+  headlightL.castShadow = true;
+  headlightR.castShadow = true;
+  
+  scene.add(headlightL, headlightR);
+  
+  headlightL.target = new THREE.Object3D();
+  headlightR.target = new THREE.Object3D();
+  headlightL.target.position.set(4, 1, 0.4);
+  headlightR.target.position.set(4, 1, -0.4);
+  scene.add(headlightL.target, headlightR.target);
+  
+  console.log('🚀 车辆运动物理已启用');
+}
+
+// 更新车辆朝向和灯光（改为只更新速度状态）
+window.updateBusHeading = function(angularNormalized, linearNormalized) {
+  if (!busGroup) return;
+  
+  // 将归一化值转换为实际物理速度
+  const linearVelocity = linearNormalized * EZ10_SPECS.avgSpeed;    // m/s
+  const angularVelocity = angularNormalized * MAX_ANGULAR_VELOCITY; // rad/s
+  
+  // 更新车辆状态（物理模拟会在 animate 循环中应用）
+  vehicleState.linearVel = linearVelocity;
+  vehicleState.angularVel = angularVelocity;
+  
+  // 更新车灯亮度
+  if (headlightL && headlightR) {
+    const brightness = 1.2 + Math.abs(linearNormalized) * 0.4;
+    headlightL.intensity = brightness;
+    headlightR.intensity = brightness;
+  }
+};
+
+console.log('🚀 Three.js 模块加载完成');
+</script>
+
+<script>
+// 控制逻辑（非模块）
+let ws, gamepadIndex = null, calibActive = false, calibrated = false;
+let calibData = {steerMin:1, steerMax:-1, throttleMin:1, throttleMax:-1, brakeMin:1, brakeMax:-1};
+let smooth = {linear:0, angular:0};
+const deadzone = 0.05;
+const keyState = {};
+
+// ========== EasyMile EZ10 物理参数 ==========
+const EZ10_SPECS = {
+  maxSpeed: 11.11,        // 最大速度 40 km/h = 11.11 m/s
+  avgSpeed: 5.56,         // 平均速度 20 km/h = 5.56 m/s
+  maxSteeringAngle: 35,   // 最大转向角 35° (估算值)
+  wheelbase: 2.0,         // 轴距约 2.0 米 (估算)
+  
+  // 加速/减速参数
+  acceleration: 1.2,      // 加速度 m/s² (温和加速)
+  deceleration: 1.5,      // 减速度 m/s² (略快于加速)
+  brakingDecel: 3.0,      // 刹车减速度 m/s² (紧急制动)
+  
+  // 转向参数
+  steeringRate: 1.0,      // 转向速率 rad/s² (转向角变化率)
+  returnRate: 1.5,        // 回正速率 rad/s² (松开方向盘后回正)
+};
+
+// 计算最大角速度 (rad/s)
+const MAX_ANGULAR_VELOCITY = (EZ10_SPECS.avgSpeed * Math.tan(EZ10_SPECS.maxSteeringAngle * Math.PI / 180)) / EZ10_SPECS.wheelbase;
+
+// 映射函数：将归一化值 [-1, 1] 映射到实际物理值
+function mapToPhysical(normalized, maxValue) {
+  return normalized * maxValue;
+}
+
+// 反向映射：将物理值转换为归一化值 (用于显示)
+function mapFromPhysical(physicalValue, maxValue) {
+  return physicalValue / maxValue;
+}
+
+// 键盘按下时间追踪
+const keyPressDuration = {
+  w: 0,
+  s: 0,
+  a: 0,
+  d: 0
+};
+
+// 重置按键时长
+function resetKeyDuration(key) {
+  if (keyPressDuration.hasOwnProperty(key)) {
+    keyPressDuration[key] = 0;
+  }
+}
+
+function initControlSocket() {
+  ws = new WebSocket(`ws://${window.location.hostname}:9090`);
+  ws.onopen = () => document.getElementById("statusMsg").textContent = "🟢 控制已连接";
+  ws.onerror = () => document.getElementById("statusMsg").textContent = "🔴 控制连接失败";
+}
+
+function startCalibration() {
+  calibActive = true;
+  setTimeout(() => calibActive = false, 4000);
+}
+
+function resetCalibration() {
+  calibData = {steerMin:1, steerMax:-1, throttleMin:1, throttleMax:-1, brakeMin:1, brakeMax:-1};
+}
+
+function confirmCalibration() {
+  calibrated = true;
+  document.getElementById("calibrationPanel").classList.add("hidden");
+  document.getElementById("mainContainer").classList.remove("hidden");
+  document.getElementById("hud").classList.remove("hidden");
+  setTimeout(() => {
+    initWebRTC();
+    if (typeof window.initThree === 'function') {
+      window.initThree();
+    }
+  }, 200);
+}
+
+// G29 控制
+window.addEventListener("gamepadconnected", e => {
+  gamepadIndex = e.gamepad.index;
+  document.getElementById("g29Status").textContent = `🎮 ${e.gamepad.id} 已连接`;
+  requestAnimationFrame(updateGamepad);
+});
+
+function applyDeadzone(x, d) {
+  if (Math.abs(x) < d) return 0;
+  return x > 0 ? (x - d) / (1 - d) : (x + d) / (1 - d);
+}
+
+function updateGamepad() {
+  if (gamepadIndex === null) return;
+  const gp = navigator.getGamepads()[gamepadIndex];
+  if (!gp) return;
+
+  let steering = gp.axes[0];
+  let throttle = (1 - gp.axes[2]) / 2;
+  let brake = (1 - gp.axes[3]) / 2;
+
+  if (calibActive) {
+    calibData.steerMin = Math.min(calibData.steerMin, steering);
+    calibData.steerMax = Math.max(calibData.steerMax, steering);
+  }
+
+  const steerNorm = (steering - calibData.steerMin) / (calibData.steerMax - calibData.steerMin) * 2 - 1;
+  const steerFiltered = applyDeadzone(steerNorm, deadzone);
+
+  const alpha = 0.15;
+  smooth.angular = smooth.angular * (1 - alpha) + (-steerFiltered) * alpha;
+  smooth.linear = smooth.linear * (1 - alpha) + (throttle - brake) * alpha;
+
+  if (typeof window.updateBusHeading === 'function') {
+    window.updateBusHeading(smooth.angular, smooth.linear);
+  }
+  updateHUD();
+
+  if (calibrated && ws && ws.readyState === 1) {
+    // 转换为实际物理值发送
+    const linearVelocity = mapToPhysical(smooth.linear, EZ10_SPECS.avgSpeed);
+    const angularVelocity = mapToPhysical(smooth.angular, MAX_ANGULAR_VELOCITY);
+    ws.send(JSON.stringify({
+      type: "drive",
+      linear: linearVelocity,      // m/s
+      angular: angularVelocity,    // rad/s
+      normalized: {
+        linear: smooth.linear,
+        angular: smooth.angular
+      }
+    }));
+  }
+
+  requestAnimationFrame(updateGamepad);
+}
+
+// 键盘控制
+window.addEventListener("keydown", e => {
+  const key = e.key.toLowerCase();
+  if (!keyState[key]) {
+    // 首次按下，重置时长
+    keyState[key] = true;
+    resetKeyDuration(key);
+  }
+  updateHUDKeys();
+});
+
+window.addEventListener("keyup", e => {
+  const key = e.key.toLowerCase();
+  keyState[key] = false;
+  resetKeyDuration(key);
+  updateHUDKeys();
+});
+
+// 主键盘控制循环 - 渐进式加速/转向
+let lastFrameTime = performance.now();
+
+function keyboardLoop() {
+  const currentTime = performance.now();
+  const deltaTime = (currentTime - lastFrameTime) / 1000; // 转换为秒
+  lastFrameTime = currentTime;
+
+  // 更新按键持续时间
+  if (keyState["w"]) keyPressDuration.w += deltaTime;
+  if (keyState["s"]) keyPressDuration.s += deltaTime;
+  if (keyState["a"]) keyPressDuration.a += deltaTime;
+  if (keyState["d"]) keyPressDuration.d += deltaTime;
+
+  // ========== 线速度控制 (渐进式加速/减速) ==========
+  let targetLinear = smooth.linear;
+  
+  if (keyState["w"]) {
+    // 按住 W = 加速
+    targetLinear += EZ10_SPECS.acceleration * deltaTime;
+    targetLinear = Math.min(targetLinear, 1.0); // 限制最大值
+  } else if (keyState["s"]) {
+    // 按住 S = 减速/倒车
+    targetLinear -= EZ10_SPECS.deceleration * deltaTime;
+    targetLinear = Math.max(targetLinear, -1.0); // 限制最小值
+  } else {
+    // 松开所有键 = 自然减速
+    if (targetLinear > 0) {
+      targetLinear -= EZ10_SPECS.brakingDecel * deltaTime;
+      targetLinear = Math.max(0, targetLinear); // 不会倒退
+    } else if (targetLinear < 0) {
+      targetLinear += EZ10_SPECS.brakingDecel * deltaTime;
+      targetLinear = Math.min(0, targetLinear); // 不会前进
+    }
+  }
+  
+  // ========== 角速度控制 (渐进式转向) ==========
+  let targetAngular = smooth.angular;
+  
+  if (keyState["a"]) {
+    // 按住 A = 左转
+    targetAngular += EZ10_SPECS.steeringRate * deltaTime;
+    targetAngular = Math.min(targetAngular, 1.0); // 限制最大值
+  } else if (keyState["d"]) {
+    // 按住 D = 右转
+    targetAngular -= EZ10_SPECS.steeringRate * deltaTime;
+    targetAngular = Math.max(targetAngular, -1.0); // 限制最小值
+  } else {
+    // 松开方向键 = 自动回正
+    if (Math.abs(targetAngular) > 0.01) {
+      const returnDelta = EZ10_SPECS.returnRate * deltaTime;
+      if (targetAngular > 0) {
+        targetAngular -= returnDelta;
+        targetAngular = Math.max(0, targetAngular);
+      } else {
+        targetAngular += returnDelta;
+        targetAngular = Math.min(0, targetAngular);
+      }
+    } else {
+      targetAngular = 0; // 完全回正
+    }
+  }
+  
+  // 空格 = 紧急制动
+  if (keyState[" "]) {
+    targetLinear = 0;
+    targetAngular = 0;
+  }
+  
+  // R = 重置车辆朝向
+  if (keyState["r"] && window.THREE) {
+    if (typeof window.updateBusHeading === 'function') {
+      window.updateBusHeading(0, 0);
+    }
+  }
+
+  // 更新平滑值
+  smooth.linear = targetLinear;
+  smooth.angular = targetAngular;
+
+  // 更新 3D 模型
+  if (typeof window.updateBusHeading === 'function') {
+    window.updateBusHeading(smooth.angular, smooth.linear);
+  }
+  updateHUD();
+
+  // 发送控制指令
+  if (calibrated && ws && ws.readyState === 1) {
+    const linearVelocity = mapToPhysical(smooth.linear, EZ10_SPECS.avgSpeed);
+    const angularVelocity = mapToPhysical(smooth.angular, MAX_ANGULAR_VELOCITY);
+    ws.send(JSON.stringify({
+      type: "drive",
+      linear: linearVelocity,      // m/s
+      angular: angularVelocity,    // rad/s
+      normalized: {
+        linear: smooth.linear,
+        angular: smooth.angular
+      },
+      debug: {
+        keyDuration: keyPressDuration
+      }
+    }));
+  }
+
+  requestAnimationFrame(keyboardLoop);
+}
+requestAnimationFrame(keyboardLoop);
+
+function updateHUD() {
+  // 显示归一化值和实际物理值
+  const linearVelocity = mapToPhysical(smooth.linear, EZ10_SPECS.avgSpeed);
+  const angularVelocity = mapToPhysical(smooth.angular, MAX_ANGULAR_VELOCITY);
+  
+  // 计算当前速度的百分比
+  const speedPercent = Math.abs(smooth.linear * 100);
+  const steerPercent = Math.abs(smooth.angular * 100);
+  
+  document.getElementById("hudLinear").innerHTML = 
+    `<strong>${linearVelocity.toFixed(2)}</strong> m/s <span style="color:#888;">(${speedPercent.toFixed(0)}%)</span>`;
+  document.getElementById("hudAngular").innerHTML = 
+    `<strong>${angularVelocity.toFixed(2)}</strong> rad/s <span style="color:#888;">(${steerPercent.toFixed(0)}%)</span>`;
+}
+
+function updateHUDKeys() {
+  ["w","a","s","d"," ","r"].forEach(k => {
+    const id = (k === " ") ? "keySp" : `key${k.toUpperCase()}`;
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle("active", !!keyState[k]);
+  });
+}
+
+// WebRTC
+const cams = [
+  {id:1, stream:'CameraFrontLeft'},
+  {id:2, stream:'CameraRear'},
+  {id:3, stream:'CameraFrontRight'},
+  {id:4, stream:'CameraFront'}
+];
+
+async function initWebRTC() {
+  for (const c of cams) await initPlayer(c);
+}
+
+async function initPlayer(c) {
+  const v = document.getElementById(`video-${c.id}`);
+  const pc = new RTCPeerConnection();
+  pc.ontrack = e => v.srcObject = e.streams[0];
+  pc.addTransceiver("video", {direction: "recvonly"});
+  
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  
+  const api = `http://${location.hostname}:1985/rtc/v1/play/`;
+  const streamurl = `webrtc://${location.hostname}/live/${c.stream}`;
+  
+  try {
+    const res = await fetch(api, {
+      method: "POST",
+      body: JSON.stringify({api, streamurl, sdp: offer.sdp})
+    });
+    const data = await res.json();
+    await pc.setRemoteDescription({type: "answer", sdp: data.sdp});
+  } catch (err) {
+    console.error(`❌ 视频流 ${c.stream} 连接失败:`, err);
+  }
+}
+
+window.addEventListener("DOMContentLoaded", () => initControlSocket());
+</script>
+</body>
+</html>
